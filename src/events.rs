@@ -76,20 +76,17 @@ impl Events {
         );
     }
 
-    /// Emit an event when the contract WASM is upgraded.
+    /// Emit an event when a new claim type is registered.
     ///
     /// # Event schema
     /// ```text
-    /// topics: ("upgraded",)
-    /// data:   admin: Address
+    /// topics: ("clmtype",)
+    /// data:   (claim_type: String, description: String)
     /// ```
-    ///
-    /// # Parameters
-    /// - `admin` — address that triggered the upgrade.
-    pub fn contract_upgraded(env: &Env, admin: &Address) {
+    pub fn claim_type_registered(env: &Env, claim_type: &String, description: &String) {
         env.events().publish(
-            (symbol_short!("upgraded"),),
-            admin.clone(),
+            (symbol_short!("clmtype"),),
+            (claim_type.clone(), description.clone()),
         );
     }
 }
