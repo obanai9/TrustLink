@@ -9,7 +9,7 @@
 //! before executing financial operations.
 
 mod storage;
-mod types;
+pub mod types;
 mod validation;
 mod events;
 
@@ -144,11 +144,20 @@ impl TrustLinkContract {
         subject: Address,
         claim_type: String,
         expiration: Option<u64>,
+        valid_from: Option<u64>,
     ) -> Result<String, Error> {
         issuer.require_auth();
         Validation::require_issuer(&env, &issuer)?;
 
         let timestamp = env.ledger().timestamp();
+        
+        if let Some(vf) = valid_from {
+            if vf <= timestamp {
+                return Err(Error::InvalidValidFrom);
+            }
+        }
+        
+        // Generate deterministic ID from attestation data
 
         let attestation_id = Attestation::generate_id(
             &env,
@@ -170,6 +179,7 @@ impl TrustLinkContract {
             timestamp,
             expiration,
             revoked: false,
+            valid_from,
         };
 
         Storage::set_attestation(&env, &attestation);
