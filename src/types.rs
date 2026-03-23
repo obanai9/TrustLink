@@ -87,6 +87,19 @@ pub struct Attestation {
     pub revoked: bool,
 }
 
+/// Metadata an issuer can associate with their address so consumers can
+/// identify who issued an attestation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuerMetadata {
+    /// Human-readable display name for the issuer.
+    pub name: String,
+    /// URL pointing to the issuer's website or documentation.
+    pub url: String,
+    /// Short description of the issuer and the claims they issue.
+    pub description: String,
+}
+
 /// The current validity state of an attestation.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
