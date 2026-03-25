@@ -26,8 +26,10 @@
 //! - `ClaimTypeList` — ordered `Vec<String>` of all registered claim type IDs;
 //!   used for pagination via `list_claim_types`.
 //! - `FeeConfig` — global attestation fee settings.
+//! - `Template(Address, String)` — full [`AttestationTemplate`] record keyed by `(issuer, template_id)`.
+//! - `TemplateRegistry(Address)` — ordered `Vec<String>` of template IDs for an issuer (insertion order).
 
-use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
+use crate::types::{Attestation, AttestationTemplate, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -59,6 +61,10 @@ pub enum StorageKey {
     ClaimTypeList,
     /// A multi-sig attestation proposal keyed by its ID.
     MultiSigProposal(String),
+    /// Full [`AttestationTemplate`] record keyed by `(issuer, template_id)`.
+    Template(Address, String),
+    /// Ordered `Vec<String>` of template IDs for an issuer (insertion order).
+    TemplateRegistry(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -320,5 +326,51 @@ impl Storage {
         env.storage()
             .persistent()
             .has(&StorageKey::MultiSigProposal(id.clone()))
+    }
+
+    /// Persist `template` keyed by `(issuer, template_id)` and refresh its TTL.
+    pub fn set_template(env: &Env, issuer: &Address, template_id: &String, template: &AttestationTemplate) {
+        let key = StorageKey::Template(issuer.clone(), template_id.clone());
+        let ttl = get_ttl_lifetime(env);
+        env.storage().persistent().set(&key, template);
+        env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    }
+
+    /// Retrieve a template by `(issuer, template_id)`, or `None` if absent.
+    pub fn get_template(env: &Env, issuer: &Address, template_id: &String) -> Option<AttestationTemplate> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::Template(issuer.clone(), template_id.clone()))
+    }
+
+    /// Return `true` if a template keyed by `(issuer, template_id)` exists.
+    pub fn has_template(env: &Env, issuer: &Address, template_id: &String) -> bool {
+        env.storage()
+            .persistent()
+            .has(&StorageKey::Template(issuer.clone(), template_id.clone()))
+    }
+
+    /// Return the ordered list of template IDs for `issuer`, or an empty
+    /// [`Vec`] if none exist.
+    pub fn get_template_registry(env: &Env, issuer: &Address) -> Vec<String> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::TemplateRegistry(issuer.clone()))
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Append `template_id` to `issuer`'s template registry ONLY if not already
+    /// present (preserves insertion order, no duplicates), then refresh TTL.
+    pub fn add_to_template_registry(env: &Env, issuer: &Address, template_id: &String) {
+        let key = StorageKey::TemplateRegistry(issuer.clone());
+        let ttl = get_ttl_lifetime(env);
+        let mut registry = Self::get_template_registry(env, issuer);
+        // Only append if the ID is not already in the registry.
+        let already_present = registry.iter().any(|id| id == *template_id);
+        if !already_present {
+            registry.push_back(template_id.clone());
+            env.storage().persistent().set(&key, &registry);
+            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+        }
     }
 }

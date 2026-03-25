@@ -149,4 +149,12 @@ impl Events {
             (proposal_id.clone(), attestation_id.clone()),
         );
     }
+
+    /// Emitted when a new attestation template is created by an issuer.
+    pub fn template_created(env: &Env, issuer: &Address, template_id: &String) {
+        env.events().publish(
+            (symbol_short!("tmpl_crt"), issuer.clone()),
+            template_id.clone(),
+        );
+    }
 }

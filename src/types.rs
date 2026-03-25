@@ -70,6 +70,18 @@ pub enum AttestationStatus {
     Pending,
 }
 
+/// A reusable per-issuer blueprint that captures default values for attestation creation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationTemplate {
+    /// Non-empty claim type identifier (e.g. "KYC", "AML").
+    pub claim_type: String,
+    /// Optional default expiration window in days from attestation creation time.
+    pub default_expiration_days: Option<u32>,
+    /// Optional default metadata string (max 256 bytes).
+    pub metadata_template: Option<String>,
+}
+
 /// A multi-sig attestation proposal that becomes active once `threshold` issuers have co-signed.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -124,6 +136,8 @@ pub enum Error {
     ProposalFinalized = 19,
     /// The proposal has expired without reaching threshold.
     ProposalExpired = 20,
+    /// claim_type field is empty.
+    InvalidClaimType = 21,
 }
 
 impl Attestation {
