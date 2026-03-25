@@ -87,7 +87,7 @@ fn test_register_issuer_emits_event() {
     let timestamp = 1234567890u64;
     env.ledger().set_timestamp(timestamp);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &None);
     client.register_issuer(&admin, &issuer);
 
     let events = env.events().all();
@@ -977,4 +977,106 @@ fn test_multisig_unregistered_proposer_rejected() {
     let result =
         client.try_propose_attestation(&unregistered, &subject, &claim_type, &required, &2);
     assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+// ── Admin transfer tests ─────────────────────────────────────────────────────
+
+#[test]
+fn test_transfer_admin_success() {
+    // Property 2: Admin address updated after transfer — Validates: Requirements 1.3
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    assert_eq!(client.get_admin(), new_admin);
+}
+
+#[test]
+fn test_transfer_admin_unauthorized() {
+    // Property 1: Non-admin cannot transfer — Validates: Requirements 2.1
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let non_admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&non_admin, &new_admin);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_transfer_admin_old_admin_loses_privileges() {
+    // Property 3: Privilege handoff — Validates: Requirements 3.1
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+
+    let result = client.try_register_issuer(&admin, &issuer);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_transfer_admin_new_admin_can_register_issuer() {
+    // Property 3: Privilege handoff — Validates: Requirements 3.2
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+    let issuer = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    client.register_issuer(&new_admin, &issuer);
+    assert!(client.is_issuer(&issuer));
+}
+
+#[test]
+fn test_transfer_admin_emits_event() {
+    // Property 4: Event emission — Validates: Requirements 1.4, 4.1, 4.2
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, _, client) = setup(&env);
+    let new_admin = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+
+    let events = env.events().all();
+    let mut found = false;
+    for (_, topics, data) in events.iter() {
+        let topic0: soroban_sdk::Symbol =
+            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+        if topic0 == soroban_sdk::symbol_short!("adm_xfer") {
+            let event_data: (Address, Address) =
+                soroban_sdk::TryFromVal::try_from_val(&env, &data).unwrap();
+            assert_eq!(event_data.0, admin);
+            assert_eq!(event_data.1, new_admin);
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "adm_xfer event not found");
+}
+
+#[test]
+fn test_transfer_admin_not_initialized() {
+    // Edge Case: Uninitialized contract — Validates: Requirements 2.2
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, client) = create_test_contract(&env);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+
+    let result = client.try_transfer_admin(&admin, &new_admin);
+    assert_eq!(result, Err(Ok(types::Error::NotInitialized)));
 }
