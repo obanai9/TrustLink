@@ -35,4 +35,8 @@ pub enum Error {
     ProposalExpired = 20,
     /// The revocation reason exceeds the maximum allowed length of 128 characters.
     ReasonTooLong = 21,
+    /// Endorser cannot endorse their own attestation.
+    CannotEndorseOwn = 22,
+    /// Endorser has already endorsed this attestation.
+    AlreadyEndorsed = 23,
 }
