@@ -151,19 +151,7 @@ fn store_attestation(env: &Env, attestation: &Attestation) {
     Storage::set_issuer_stats(env, &attestation.issuer, &stats);
 }
 
-fn paginate_strings(env: &Env, values: Vec<String>, start: u32, limit: u32) -> Vec<String> {
-    let total = values.len();
-    let end = (start + limit).min(total);
-    let mut result = Vec::new(env);
 
-    for index in start..end {
-        if let Some(value) = values.get(index) {
-            result.push_back(value);
-        }
-    }
-
-    result
-}
 
 /// Fire the expiration hook for `subject` if one is registered and the
 /// attestation is inside the notification window. Failures are silently
@@ -774,7 +762,7 @@ impl TrustLinkContract {
         start: u32,
         limit: u32,
     ) -> Vec<String> {
-        paginate_strings(
+        crate::storage::paginate(
             &env,
             Storage::get_subject_attestations(&env, &subject),
             start,
@@ -812,7 +800,7 @@ impl TrustLinkContract {
         start: u32,
         limit: u32,
     ) -> Vec<String> {
-        paginate_strings(
+        crate::storage::paginate(
             &env,
             Storage::get_issuer_attestations(&env, &issuer),
             start,
@@ -927,7 +915,7 @@ impl TrustLinkContract {
     }
 
     pub fn list_claim_types(env: Env, start: u32, limit: u32) -> Vec<String> {
-        paginate_strings(&env, Storage::get_claim_type_list(&env), start, limit)
+        crate::storage::paginate(&env, Storage::get_claim_type_list(&env), start, limit)
     }
 
     /// Create a multi-sig attestation proposal.

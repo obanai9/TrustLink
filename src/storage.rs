@@ -484,3 +484,87 @@ impl Storage {
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 }
+
+/// Return a paginated window of `values` starting at index `start` for up to
+/// `limit` items. Returns an empty vec if `start >= values.len()`.
+pub(crate) fn paginate(env: &Env, values: Vec<String>, start: u32, limit: u32) -> Vec<String> {
+    let total = values.len();
+    if start >= total {
+        return Vec::new(env);
+    }
+    let end = (start + limit).min(total);
+    let mut result = Vec::new(env);
+    for index in start..end {
+        if let Some(value) = values.get(index) {
+            result.push_back(value);
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::Env;
+
+    fn make_vec(env: &Env, items: &[&str]) -> Vec<String> {
+        let mut v = Vec::new(env);
+        for s in items {
+            v.push_back(String::from_str(env, s));
+        }
+        v
+    }
+
+    #[test]
+    fn paginate_normal_slice() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b", "c", "d", "e"]);
+        let result = paginate(&env, input, 1, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.get(0).unwrap(), String::from_str(&env, "b"));
+        assert_eq!(result.get(1).unwrap(), String::from_str(&env, "c"));
+        assert_eq!(result.get(2).unwrap(), String::from_str(&env, "d"));
+    }
+
+    #[test]
+    fn paginate_empty_input() {
+        let env = Env::default();
+        let input: Vec<String> = Vec::new(&env);
+        let result = paginate(&env, input, 0, 5);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn paginate_start_beyond_length() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b"]);
+        let result = paginate(&env, input, 10, 5);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn paginate_limit_overflow() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b", "c"]);
+        let result = paginate(&env, input, 1, 100);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(0).unwrap(), String::from_str(&env, "b"));
+        assert_eq!(result.get(1).unwrap(), String::from_str(&env, "c"));
+    }
+
+    #[test]
+    fn paginate_start_zero_full_limit() {
+        let env = Env::default();
+        let input = make_vec(&env, &["x", "y", "z"]);
+        let result = paginate(&env, input, 0, 3);
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn paginate_start_equals_length() {
+        let env = Env::default();
+        let input = make_vec(&env, &["a", "b", "c"]);
+        let result = paginate(&env, input, 3, 5);
+        assert_eq!(result.len(), 0);
+    }
+}
