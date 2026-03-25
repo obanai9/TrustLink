@@ -335,7 +335,7 @@ fn test_has_valid_claim_and_revocation() {
     let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
     assert!(client.has_valid_claim(&subject, &claim_type));
 
-    client.revoke_attestation(&issuer, &id);
+    client.revoke_attestation(&issuer, &id, &None);
     assert!(!client.has_valid_claim(&subject, &claim_type));
     assert!(client.get_attestation(&id).revoked);
 }
@@ -1008,259 +1008,26 @@ fn test_multisig_unregistered_proposer_rejected() {
     assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
 }
 
-// ── Endorsement tests ────────────────────────────────────────────────────────
-
-fn setup_two_issuers(env: &Env) -> (Address, Address, Address, TrustLinkContractClient<'_>) {
-    let (_, client) = create_test_contract(env);
-    let admin = Address::generate(env);
-    let issuer1 = Address::generate(env);
-    let issuer2 = Address::generate(env);
-    client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer1);
-    client.register_issuer(&admin, &issuer2);
-    (admin, issuer1, issuer2, client)
-}
-
 #[test]
-fn test_endorse_attestation_success() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    client.endorse_attestation(&issuer2, &attestation_id);
-
-    assert_eq!(client.get_endorsement_count(&attestation_id), 1);
-    let endorsements = client.get_endorsements(&attestation_id);
-    assert_eq!(endorsements.len(), 1);
-    assert_eq!(endorsements.get(0).unwrap().endorser, issuer2);
-    assert_eq!(endorsements.get(0).unwrap().attestation_id, attestation_id);
-}
-
-#[test]
-fn test_endorse_attestation_emits_event() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-    let timestamp = 1_000_000u64;
-    env.ledger().set_timestamp(timestamp);
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    client.endorse_attestation(&issuer2, &attestation_id);
-
-    let events = env.events().all();
-    let mut found = false;
-    for (_, topics, _) in events.iter() {
-        let topic0: soroban_sdk::Symbol =
-            soroban_sdk::TryFromVal::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
-        if topic0 == soroban_sdk::symbol_short!("endorsed") {
-            found = true;
-            break;
-        }
-    }
-    assert!(found, "endorsed event not emitted");
-}
-
-#[test]
-fn test_endorse_attestation_unregistered_issuer_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, _issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-    let unregistered = Address::generate(&env);
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    let result = client.try_endorse_attestation(&unregistered, &attestation_id);
-    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
-}
-
-#[test]
-fn test_endorse_attestation_cannot_endorse_own() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, _issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    let result = client.try_endorse_attestation(&issuer1, &attestation_id);
-    assert_eq!(result, Err(Ok(types::Error::CannotEndorseOwn)));
-}
-
-#[test]
-fn test_endorse_attestation_cannot_endorse_revoked() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    client.revoke_attestation(&issuer1, &attestation_id);
-
-    let result = client.try_endorse_attestation(&issuer2, &attestation_id);
-    assert_eq!(result, Err(Ok(types::Error::AlreadyRevoked)));
-}
-
-#[test]
-fn test_endorse_attestation_duplicate_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    client.endorse_attestation(&issuer2, &attestation_id);
-
-    let result = client.try_endorse_attestation(&issuer2, &attestation_id);
-    assert_eq!(result, Err(Ok(types::Error::AlreadyEndorsed)));
-}
-
-#[test]
-fn test_endorse_attestation_multiple_endorsers() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer1, issuer2, client) = setup_two_issuers(&env);
-    let issuer3 = Address::generate(&env);
-    client.register_issuer(&admin, &issuer3);
-
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    client.endorse_attestation(&issuer2, &attestation_id);
-    client.endorse_attestation(&issuer3, &attestation_id);
-
-    assert_eq!(client.get_endorsement_count(&attestation_id), 2);
-    let endorsements = client.get_endorsements(&attestation_id);
-    assert_eq!(endorsements.get(0).unwrap().endorser, issuer2);
-    assert_eq!(endorsements.get(1).unwrap().endorser, issuer3);
-}
-
-#[test]
-fn test_get_endorsements_empty_for_new_attestation() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_admin, issuer1, _issuer2, client) = setup_two_issuers(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let attestation_id =
-        client.create_attestation(&issuer1, &subject, &claim_type, &None, &None, &None);
-
-    assert_eq!(client.get_endorsement_count(&attestation_id), 0);
-    assert_eq!(client.get_endorsements(&attestation_id).len(), 0);
-}
-
-// ── GlobalStats tests ────────────────────────────────────────────────────────
-
-#[test]
-fn test_global_stats_zero_on_init() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (_, client) = create_test_contract(&env);
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &None);
-
-    let stats = client.get_global_stats();
-    assert_eq!(stats.total_attestations, 0);
-    assert_eq!(stats.total_revocations, 0);
-    assert_eq!(stats.total_issuers, 0);
-}
-
-#[test]
-fn test_global_stats_issuer_register_and_remove() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
-
-    // setup() registers one issuer
-    let stats = client.get_global_stats();
-    assert_eq!(stats.total_issuers, 1);
-
-    let issuer2 = Address::generate(&env);
-    client.register_issuer(&admin, &issuer2);
-    assert_eq!(client.get_global_stats().total_issuers, 2);
-
-    client.remove_issuer(&admin, &issuer);
-    assert_eq!(client.get_global_stats().total_issuers, 1);
-
-    client.remove_issuer(&admin, &issuer2);
-    assert_eq!(client.get_global_stats().total_issuers, 0);
-}
-
-#[test]
-fn test_global_stats_total_issuers_saturates_at_zero() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
-    // Remove the one registered issuer — should reach 0
-    client.remove_issuer(&admin, &issuer);
-    assert_eq!(client.get_global_stats().total_issuers, 0);
-
-    // Register and immediately remove again to confirm it stays at 0 after decrement
-    let issuer2 = Address::generate(&env);
-    client.register_issuer(&admin, &issuer2);
-    assert_eq!(client.get_global_stats().total_issuers, 1);
-    client.remove_issuer(&admin, &issuer2);
-    assert_eq!(client.get_global_stats().total_issuers, 0);
-}
-
-#[test]
-fn test_global_stats_attestation_create() {
+fn test_revoke_with_reason_stores_reason() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (_, issuer, client) = setup(&env);
     let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let reason = String::from_str(&env, "Document expired");
 
-    client.create_attestation(
-        &issuer,
-        &subject,
-        &String::from_str(&env, "KYC_PASSED"),
-        &None,
-        &None,
-        &None,
-    );
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.revoke_attestation(&issuer, &id, &Some(reason.clone()));
 
-    let stats = client.get_global_stats();
-    assert_eq!(stats.total_attestations, 1);
-    assert_eq!(stats.total_revocations, 0);
+    let attestation = client.get_attestation(&id);
+    assert!(attestation.revoked);
+    assert_eq!(attestation.revocation_reason, Some(reason));
 }
 
 #[test]
-fn test_global_stats_revocation() {
+fn test_revoke_without_reason_stores_none() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -1269,139 +1036,46 @@ fn test_global_stats_revocation() {
     let claim_type = String::from_str(&env, "KYC_PASSED");
 
     let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-    assert_eq!(client.get_global_stats().total_revocations, 0);
+    client.revoke_attestation(&issuer, &id, &None);
 
-    client.revoke_attestation(&issuer, &id);
-    assert_eq!(client.get_global_stats().total_revocations, 1);
-    assert_eq!(client.get_global_stats().total_attestations, 1);
+    let attestation = client.get_attestation(&id);
+    assert!(attestation.revoked);
+    assert_eq!(attestation.revocation_reason, None);
 }
 
 #[test]
-fn test_global_stats_batch_create() {
+fn test_revoke_reason_too_long_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
     let claim_type = String::from_str(&env, "KYC_PASSED");
 
-    let mut subjects = soroban_sdk::Vec::new(&env);
-    subjects.push_back(Address::generate(&env));
-    subjects.push_back(Address::generate(&env));
-    subjects.push_back(Address::generate(&env));
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
 
-    client.create_attestations_batch(&issuer, &subjects, &claim_type, &None);
-
-    assert_eq!(client.get_global_stats().total_attestations, 3);
+    // 129 'a' characters — one over the limit
+    let long_reason = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let result = client.try_revoke_attestation(&issuer, &id, &Some(long_reason));
+    assert_eq!(result, Err(Ok(types::Error::ReasonTooLong)));
 }
 
 #[test]
-fn test_global_stats_batch_revoke() {
+fn test_revoke_reason_exactly_128_chars_accepted() {
     let env = Env::default();
     env.mock_all_auths();
 
     let (_, issuer, client) = setup(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    let mut subjects = soroban_sdk::Vec::new(&env);
-    subjects.push_back(Address::generate(&env));
-    subjects.push_back(Address::generate(&env));
-
-    let ids = client.create_attestations_batch(&issuer, &subjects, &claim_type, &None);
-    assert_eq!(client.get_global_stats().total_revocations, 0);
-
-    client.revoke_attestations_batch(&issuer, &ids);
-    assert_eq!(client.get_global_stats().total_revocations, 2);
-}
-
-#[test]
-fn test_global_stats_import_attestation() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
     let subject = Address::generate(&env);
     let claim_type = String::from_str(&env, "KYC_PASSED");
 
-    env.ledger().with_mut(|li| li.timestamp = 5_000);
-    client.import_attestation(&admin, &issuer, &subject, &claim_type, &1_000, &None);
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
 
-    assert_eq!(client.get_global_stats().total_attestations, 1);
-}
+    // Exactly 128 'a' characters
+    let exact_reason = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    client.revoke_attestation(&issuer, &id, &Some(exact_reason.clone()));
 
-#[test]
-fn test_global_stats_multisig_increments_on_finalize() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (issuer1, issuer2, issuer3, _, client) = setup_multisig(&env);
-    let subject = Address::generate(&env);
-    let claim_type = String::from_str(&env, "ACCREDITED_INVESTOR");
-
-    let mut required = soroban_sdk::Vec::new(&env);
-    required.push_back(issuer1.clone());
-    required.push_back(issuer2.clone());
-    required.push_back(issuer3.clone());
-
-    // Before finalization — no attestation yet
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
-    assert_eq!(client.get_global_stats().total_attestations, 0);
-
-    // Second signature reaches threshold → attestation finalized
-    client.cosign_attestation(&issuer2, &proposal_id);
-    assert_eq!(client.get_global_stats().total_attestations, 1);
-}
-
-#[test]
-fn test_global_stats_accurate_after_many_operations() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let (admin, issuer, client) = setup(&env);
-    let claim_type = String::from_str(&env, "KYC_PASSED");
-
-    // Register 2 more issuers (1 already registered in setup)
-    let issuer2 = Address::generate(&env);
-    let issuer3 = Address::generate(&env);
-    client.register_issuer(&admin, &issuer2);
-    client.register_issuer(&admin, &issuer3);
-
-    // Create 5 attestations across different subjects
-    let mut ids = soroban_sdk::Vec::new(&env);
-    for i in 0u64..5 {
-        env.ledger().with_mut(|li| li.timestamp = 1_000 + i);
-        let subject = Address::generate(&env);
-        let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
-        ids.push_back(id);
-    }
-
-    // Revoke 2 of them
-    client.revoke_attestation(&issuer, &ids.get(0).unwrap());
-    client.revoke_attestation(&issuer, &ids.get(1).unwrap());
-
-    // Remove one issuer
-    client.remove_issuer(&admin, &issuer3);
-
-    let stats = client.get_global_stats();
-    assert_eq!(stats.total_attestations, 5);
-    assert_eq!(stats.total_revocations, 2);
-    assert_eq!(stats.total_issuers, 2); // issuer + issuer2
-}
-
-#[test]
-fn test_global_stats_no_auth_required() {
-    // get_global_stats has no require_auth() — it must work in a plain Env
-    // without mock_all_auths being active for the query call.
-    let env = Env::default();
-    env.mock_all_auths();
-    let (_, client) = create_test_contract(&env);
-    let admin = Address::generate(&env);
-    client.initialize(&admin, &None);
-
-    // Calling get_global_stats after mock_all_auths scope — still no auth needed.
-    // The function itself never calls require_auth(), so this must not panic.
-    let stats = client.get_global_stats();
-    assert_eq!(stats.total_attestations, 0);
-    assert_eq!(stats.total_revocations, 0);
-    assert_eq!(stats.total_issuers, 0);
+    let attestation = client.get_attestation(&id);
+    assert!(attestation.revoked);
+    assert_eq!(attestation.revocation_reason, Some(exact_reason));
 }

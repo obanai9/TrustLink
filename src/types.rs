@@ -77,6 +77,7 @@ pub struct Attestation {
     pub source_chain: Option<String>,
     pub source_tx: Option<String>,
     pub tags: Option<Vec<String>>,
+    pub revocation_reason: Option<String>,
 }
 
 #[contracttype]
@@ -155,10 +156,8 @@ pub enum Error {
     ProposalFinalized = 19,
     /// The proposal has expired without reaching threshold.
     ProposalExpired = 20,
-    /// The endorser has already endorsed this attestation.
-    AlreadyEndorsed = 21,
-    /// An issuer cannot endorse their own attestation.
-    CannotEndorseOwn = 22,
+    /// The revocation reason exceeds the maximum allowed length of 128 characters.
+    ReasonTooLong = 21,
 }
 
 impl Attestation {
