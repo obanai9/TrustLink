@@ -13,8 +13,8 @@ use soroban_sdk::{contract, contractimpl, token::TokenClient, Address, Bytes, En
 use crate::events::Events;
 use crate::storage::Storage;
 use crate::types::{
-    Attestation, AttestationStatus, AttestationTemplate, ClaimTypeInfo, ContractMetadata, Error,
-    FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
+    Attestation, AttestationStatus, ClaimTypeInfo, ContractMetadata, Error, FeeConfig,
+    IssuerMetadata, IssuerStats, MultiSigProposal, TtlConfig, MULTISIG_PROPOSAL_TTL_SECS,
 };
 use crate::validation::Validation;
 
@@ -133,6 +133,11 @@ fn store_attestation(env: &Env, attestation: &Attestation) {
     Storage::set_attestation(env, attestation);
     Storage::add_subject_attestation(env, &attestation.subject, &attestation.id);
     Storage::add_issuer_attestation(env, &attestation.issuer, &attestation.id);
+
+    // Increment total_issued counter atomically with the attestation write.
+    let mut stats = Storage::get_issuer_stats(env, &attestation.issuer);
+    stats.total_issued += 1;
+    Storage::set_issuer_stats(env, &attestation.issuer, &stats);
 }
 
 fn paginate_strings(env: &Env, values: Vec<String>, start: u32, limit: u32) -> Vec<String> {
@@ -204,11 +209,10 @@ impl TrustLinkContract {
     pub fn register_issuer(env: Env, admin: Address, issuer: Address, tier: Option<IssuerTier>) -> Result<(), Error> {
         admin.require_auth();
         Validation::require_admin(&env, &admin)?;
+        let timestamp = env.ledger().timestamp();
         Storage::add_issuer(&env, &issuer);
-        let effective_tier = tier.unwrap_or(IssuerTier::Bronze);
-        Storage::set_issuer_tier(&env, &issuer, &effective_tier);
-        Events::issuer_registered(&env, &issuer, &admin, env.ledger().timestamp());
-        Events::issuer_tier_updated(&env, &issuer, &effective_tier);
+        Storage::init_issuer_stats(&env, &issuer, timestamp);
+        Events::issuer_registered(&env, &issuer, &admin, timestamp);
         Ok(())
     }
 
@@ -520,6 +524,12 @@ impl TrustLinkContract {
         attestation.revoked = true;
         Storage::set_attestation(&env, &attestation);
         Events::attestation_revoked(&env, &attestation_id, &issuer);
+
+        // Increment total_revoked counter atomically with the revocation write.
+        let mut stats = Storage::get_issuer_stats(&env, &issuer);
+        stats.total_revoked += 1;
+        Storage::set_issuer_stats(&env, &issuer, &stats);
+
         Ok(())
     }
 
@@ -547,6 +557,13 @@ impl TrustLinkContract {
             Storage::set_attestation(&env, &attestation);
             Events::attestation_revoked(&env, &attestation_id, &issuer);
             count += 1;
+        }
+
+        // Increment total_revoked once for the whole batch.
+        if count > 0 {
+            let mut stats = Storage::get_issuer_stats(&env, &issuer);
+            stats.total_revoked += count as u64;
+            Storage::set_issuer_stats(&env, &issuer, &stats);
         }
 
         Ok(count)
@@ -833,6 +850,10 @@ impl TrustLinkContract {
 
     pub fn is_issuer(env: Env, address: Address) -> bool {
         Storage::is_issuer(&env, &address)
+    }
+
+    pub fn get_issuer_stats(env: Env, issuer: Address) -> IssuerStats {
+        Storage::get_issuer_stats(&env, &issuer)
     }
 
     pub fn is_bridge(env: Env, address: Address) -> bool {

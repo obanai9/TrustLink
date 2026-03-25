@@ -29,7 +29,7 @@
 //! - `Template(Address, String)` — full [`AttestationTemplate`] record keyed by `(issuer, template_id)`.
 //! - `TemplateRegistry(Address)` — ordered `Vec<String>` of template IDs for an issuer (insertion order).
 
-use crate::types::{Attestation, AttestationTemplate, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, MultiSigProposal, TtlConfig};
+use crate::types::{Attestation, ClaimTypeInfo, Error, FeeConfig, IssuerMetadata, IssuerStats, MultiSigProposal, TtlConfig};
 use soroban_sdk::{contracttype, Address, Env, String, Vec};
 
 /// Keys used to address data in contract storage.
@@ -61,10 +61,8 @@ pub enum StorageKey {
     ClaimTypeList,
     /// A multi-sig attestation proposal keyed by its ID.
     MultiSigProposal(String),
-    /// Full [`AttestationTemplate`] record keyed by `(issuer, template_id)`.
-    Template(Address, String),
-    /// Ordered `Vec<String>` of template IDs for an issuer (insertion order).
-    TemplateRegistry(Address),
+    /// Activity metrics for a registered issuer.
+    IssuerStats(Address),
 }
 
 const DAY_IN_LEDGERS: u32 = 17280;
@@ -360,49 +358,41 @@ impl Storage {
             .has(&StorageKey::MultiSigProposal(id.clone()))
     }
 
-    /// Persist `template` keyed by `(issuer, template_id)` and refresh its TTL.
-    pub fn set_template(env: &Env, issuer: &Address, template_id: &String, template: &AttestationTemplate) {
-        let key = StorageKey::Template(issuer.clone(), template_id.clone());
+    /// Retrieve activity stats for `issuer`, or a zeroed default if not yet written.
+    pub fn get_issuer_stats(env: &Env, issuer: &Address) -> IssuerStats {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::IssuerStats(issuer.clone()))
+            .unwrap_or(IssuerStats {
+                total_issued: 0,
+                total_revoked: 0,
+                registered_at: 0,
+            })
+    }
+
+    /// Persist `stats` for `issuer` and refresh its TTL.
+    pub fn set_issuer_stats(env: &Env, issuer: &Address, stats: &IssuerStats) {
+        let key = StorageKey::IssuerStats(issuer.clone());
         let ttl = get_ttl_lifetime(env);
-        env.storage().persistent().set(&key, template);
+        env.storage().persistent().set(&key, stats);
         env.storage().persistent().extend_ttl(&key, ttl, ttl);
     }
 
-    /// Retrieve a template by `(issuer, template_id)`, or `None` if absent.
-    pub fn get_template(env: &Env, issuer: &Address, template_id: &String) -> Option<AttestationTemplate> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Template(issuer.clone(), template_id.clone()))
-    }
-
-    /// Return `true` if a template keyed by `(issuer, template_id)` exists.
-    pub fn has_template(env: &Env, issuer: &Address, template_id: &String) -> bool {
-        env.storage()
-            .persistent()
-            .has(&StorageKey::Template(issuer.clone(), template_id.clone()))
-    }
-
-    /// Return the ordered list of template IDs for `issuer`, or an empty
-    /// [`Vec`] if none exist.
-    pub fn get_template_registry(env: &Env, issuer: &Address) -> Vec<String> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::TemplateRegistry(issuer.clone()))
-            .unwrap_or(Vec::new(env))
-    }
-
-    /// Append `template_id` to `issuer`'s template registry ONLY if not already
-    /// present (preserves insertion order, no duplicates), then refresh TTL.
-    pub fn add_to_template_registry(env: &Env, issuer: &Address, template_id: &String) {
-        let key = StorageKey::TemplateRegistry(issuer.clone());
-        let ttl = get_ttl_lifetime(env);
-        let mut registry = Self::get_template_registry(env, issuer);
-        // Only append if the ID is not already in the registry.
-        let already_present = registry.iter().any(|id| id == *template_id);
-        if !already_present {
-            registry.push_back(template_id.clone());
-            env.storage().persistent().set(&key, &registry);
-            env.storage().persistent().extend_ttl(&key, ttl, ttl);
+    /// Initialise stats for a newly registered issuer (sets `registered_at`).
+    /// If stats already exist (re-registration after removal) the timestamp is
+    /// preserved and counters are left unchanged.
+    pub fn init_issuer_stats(env: &Env, issuer: &Address, registered_at: u64) {
+        let key = StorageKey::IssuerStats(issuer.clone());
+        if !env.storage().persistent().has(&key) {
+            Self::set_issuer_stats(
+                env,
+                issuer,
+                &IssuerStats {
+                    total_issued: 0,
+                    total_revoked: 0,
+                    registered_at,
+                },
+            );
         }
     }
 }
