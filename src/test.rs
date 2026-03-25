@@ -37,7 +37,7 @@ fn setup(env: &Env) -> (Address, Address, TrustLinkContractClient<'_>) {
     let admin = Address::generate(env);
     let issuer = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer, &None);
+    client.register_issuer(&admin, &issuer);
     (admin, issuer, client)
 }
 
@@ -779,9 +779,9 @@ fn setup_multisig(
     let issuer2 = Address::generate(env);
     let issuer3 = Address::generate(env);
     client.initialize(&admin, &None);
-    client.register_issuer(&admin, &issuer1, &None);
-    client.register_issuer(&admin, &issuer2, &None);
-    client.register_issuer(&admin, &issuer3, &None);
+    client.register_issuer(&admin, &issuer1);
+    client.register_issuer(&admin, &issuer2);
+    client.register_issuer(&admin, &issuer3);
     (issuer1, issuer2, issuer3, admin, client)
 }
 
@@ -847,7 +847,7 @@ fn test_multisig_non_required_signer_rejected() {
 
     let (issuer1, issuer2, issuer3, admin, client) = setup_multisig(&env);
     let outsider = Address::generate(&env);
-    client.register_issuer(&admin, &outsider, &None);
+    client.register_issuer(&admin, &outsider);
 
     let subject = Address::generate(&env);
     let claim_type = String::from_str(&env, "ACCREDITED_INVESTOR");
@@ -1472,4 +1472,47 @@ fn test_audit_log_batch_revoke_appends_entries() {
     assert_eq!(client.get_audit_log(&id1).len(), 2);
     assert_eq!(client.get_audit_log(&id2).len(), 2);
     assert_eq!(client.get_audit_log(&id1).get(1).unwrap().action, crate::types::AuditAction::Revoked);
+}
+
+// ---------------------------------------------------------------------------
+// health_check
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_health_check_before_initialization() {
+    let env = Env::default();
+    let (_, client) = create_test_contract(&env);
+
+    let status = client.health_check();
+
+    assert!(!status.initialized);
+    assert!(!status.admin_set);
+    assert_eq!(status.issuer_count, 0);
+    assert_eq!(status.total_attestations, 0);
+}
+
+#[test]
+fn test_health_check_after_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, issuer, client) = setup(&env);
+
+    // After init + 1 issuer registered by setup()
+    let status = client.health_check();
+    assert!(status.initialized);
+    assert!(status.admin_set);
+    assert_eq!(status.issuer_count, 1);
+    assert_eq!(status.total_attestations, 0);
+
+    // Create two attestations
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+    client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+    let subject2 = Address::generate(&env);
+    client.create_attestation(&issuer, &subject2, &claim, &None, &None, &None);
+
+    let status = client.health_check();
+    assert_eq!(status.total_attestations, 2);
+    assert_eq!(status.issuer_count, 1);
 }
