@@ -1,6 +1,7 @@
 # TrustLink - On-Chain Attestation & Verification System
 
 [![CI](https://github.com/afurious/TrustLink/actions/workflows/ci.yml/badge.svg)](https://github.com/afurious/TrustLink/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/afurious/TrustLink/branch/main/graph/badge.svg)](https://codecov.io/gh/afurious/TrustLink)
 
 TrustLink is a Soroban smart contract that provides a reusable trust layer for the Stellar blockchain. It enables trusted issuers, bridge contracts, and administrators to create, import, manage, and revoke attestations about wallet addresses, allowing other contracts and applications to verify claims before executing financial operations.
 
@@ -619,10 +620,10 @@ data: (claim_type, description)
 # Run tests
 make test
 
-# Build contract
+# Build contract (WASM release)
 make build
 
-# Build optimized version
+# Build + optimize WASM
 make optimize
 
 # Clean artifacts
@@ -691,6 +692,12 @@ Tests cover:
 4. **Time-based Expiration**: Automatic invalidation of expired claims
 5. **Event Transparency**: All changes are logged for auditability
 
+For a full description of the trust hierarchy, threat model, known limitations,
+and operational security recommendations, see [docs/security.md](docs/security.md).
+
+For the pre-mainnet line-by-line authorization audit, see
+[docs/security-review.md](docs/security-review.md).
+
 ## Use Cases
 
 - **DeFi Protocols**: Verify KYC before lending/borrowing
@@ -701,25 +708,143 @@ Tests cover:
 - **Insurance**: Verify policyholder identity
 - **Stellar Anchors**: End-to-end anchor KYC attestation flow example in [examples/anchor-integration/README.md](examples/anchor-integration/README.md)
 - **Soroban Tokens**: KYC-restricted token transfer example in [examples/kyc-token/README.md](examples/kyc-token/README.md)
+- **DAO Governance**: Voter eligibility-gated voting example in [examples/governance/README.md](examples/governance/README.md)
+
+## v0.1.0 Release Checklist
+
+```bash
+# 1) Run all tests
+cargo test
+
+# 2) Build optimized WASM artifact
+cargo build --target wasm32-unknown-unknown --release
+
+# 3) Deploy to testnet and capture contract ID
+soroban contract deploy \
+    --wasm target/wasm32-unknown-unknown/release/trustlink.wasm \
+    --network testnet \
+    --source <IDENTITY>
+
+# 4) Tag release
+git tag -a v0.1.0 -m "TrustLink v0.1.0"
+git push origin v0.1.0
+
+# 5) Publish GitHub release and attach WASM artifact
+gh release create v0.1.0 \
+    target/wasm32-unknown-unknown/release/trustlink.wasm \
+    --title "TrustLink v0.1.0" \
+    --notes-file RELEASE_NOTES_v0.1.0.md
+```
+
+Before creating the GitHub release, update `RELEASE_NOTES_v0.1.0.md` with the deployed testnet contract ID.
 
 ## Deployment
 
+TrustLink's Makefile supports deploying to testnet, mainnet, and a local node
+with a single command. All network targets build an optimized WASM artifact
+before deploying.
+
+### Prerequisites
+
 ```bash
-# Build optimized contract
-make optimize
+# Install Stellar CLI
+cargo install --locked stellar-cli --features opt
 
-# Deploy to network
-soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/trustlink.wasm \
-  --network testnet
-
-# Initialize
-soroban contract invoke \
-  --id <CONTRACT_ID> \
-  --network testnet \
-  -- initialize \
-  --admin <ADMIN_ADDRESS>
+# Add WASM target (if not already present)
+rustup target add wasm32-unknown-unknown
 ```
+
+### Environment variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ADMIN_SECRET` | Yes (deploy/invoke) | Stellar secret key (`S...`) used to sign transactions |
+| `CONTRACT_ID` | Yes (invoke) | Contract address returned by `deploy` |
+| `TESTNET_RPC_URL` | No | Override testnet RPC (default: `https://soroban-testnet.stellar.org`) |
+| `MAINNET_RPC_URL` | No | Override mainnet RPC |
+| `LOCAL_RPC_URL` | No | Override local RPC (default: `http://localhost:8000/soroban/rpc`) |
+
+Never commit `ADMIN_SECRET` to version control. Always pass it via the shell environment.
+
+### Deploy to testnet
+
+```bash
+export ADMIN_SECRET=SXXX...
+make deploy                      # NETWORK defaults to testnet
+# or explicitly:
+make deploy NETWORK=testnet
+# or use the convenience alias:
+make testnet
+```
+
+### Deploy to mainnet
+
+Mainnet deploys prompt for confirmation before proceeding.
+
+```bash
+export ADMIN_SECRET=SXXX...
+make deploy NETWORK=mainnet
+# or:
+make mainnet
+```
+
+### Deploy to a local node
+
+```bash
+export ADMIN_SECRET=SXXX...
+make deploy NETWORK=local
+# or:
+make local
+```
+
+### Initialize after deploy
+
+```bash
+export CONTRACT_ID=C...          # printed by make deploy
+export ADMIN_SECRET=SXXX...
+
+make invoke ARGS='-- initialize --admin <ADMIN_ADDRESS> --ttl_days null'
+```
+
+### Invoke any contract function
+
+```bash
+export CONTRACT_ID=C...
+
+# Read-only (no ADMIN_SECRET needed)
+make invoke ARGS='-- get_admin'
+make invoke ARGS='-- is_paused'
+make invoke ARGS='-- get_global_stats'
+
+# State-changing (ADMIN_SECRET required)
+export ADMIN_SECRET=SXXX...
+make invoke ARGS='-- register_issuer --admin <ADMIN> --issuer <ISSUER>'
+make invoke ARGS='-- pause --admin <ADMIN>'
+
+# Target a specific network
+make invoke NETWORK=mainnet ARGS='-- get_admin'
+```
+
+### All Makefile targets
+
+| Target | Description |
+|--------|-------------|
+| `make build` | Build WASM release artifact |
+| `make test` | Run all unit tests |
+| `make optimize` | Build + optimize WASM |
+| `make fmt` | Format source code |
+| `make clippy` | Run clippy linter |
+| `make clean` | Remove build artifacts |
+| `make install` | Print dependency installation instructions |
+| `make deploy` | Deploy to `NETWORK` (default: testnet) |
+| `make deploy NETWORK=testnet` | Deploy to testnet |
+| `make deploy NETWORK=mainnet` | Deploy to mainnet (prompts for confirmation) |
+| `make deploy NETWORK=local` | Deploy to local node |
+| `make testnet` | Alias for `deploy NETWORK=testnet` |
+| `make mainnet` | Alias for `deploy NETWORK=mainnet` |
+| `make local` | Alias for `deploy NETWORK=local` |
+| `make invoke ARGS='-- fn'` | Invoke a contract function on `NETWORK` |
+| `make help` | Print all targets with usage examples |
 
 ## Video Tutorial
 
