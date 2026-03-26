@@ -1634,3 +1634,98 @@ fn test_removed_issuer_can_revoke_own_attestation() {
     assert!(att.revoked);
     assert!(!client.has_valid_claim(&subject, &claim));
 }
+
+// ── Multi-issuer has_valid_claim tests ──────────────────────────────────────
+
+#[test]
+fn test_multi_issuer_both_valid_returns_true() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.create_attestation(&issuer1, &subject, &claim, &None, &None, &None);
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    assert!(client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+fn test_multi_issuer_one_revoked_one_valid_returns_true() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id1 = client.create_attestation(&issuer1, &subject, &claim, &None, &None, &None);
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    client.revoke_attestation(&issuer1, &id1, &None);
+
+    // issuer1's attestation is revoked but issuer2's is still valid
+    assert!(client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+fn test_multi_issuer_both_revoked_returns_false() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id1 = client.create_attestation(&issuer1, &subject, &claim, &None, &None, &None);
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    let id2 = client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    client.revoke_attestation(&issuer1, &id1, &None);
+    client.revoke_attestation(&issuer2, &id2, &None);
+
+    assert!(!client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+fn test_multi_issuer_one_expired_one_valid_returns_true() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    // issuer1 creates an attestation that expires at t=5_000
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.create_attestation(&issuer1, &subject, &claim, &Some(5_000), &None, &None);
+
+    // issuer2 creates a non-expiring attestation
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    // Advance past issuer1's expiration
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+
+    // issuer1's attestation is expired but issuer2's is still valid
+    assert!(client.has_valid_claim(&subject, &claim));
+}

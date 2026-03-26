@@ -263,6 +263,20 @@ let has_specific_kyc = contract.has_valid_claim_from_issuer(
 );
 ```
 
+#### Multi-issuer behavior
+
+A subject may hold the same claim type issued by multiple issuers. `has_valid_claim` uses OR-logic across all issuers — it returns `true` if **any one** attestation for that claim type is currently valid, regardless of the state of the others.
+
+| Scenario | Result |
+|----------|--------|
+| Two issuers, both valid | `true` |
+| Two issuers, one revoked, one valid | `true` |
+| Two issuers, one expired, one valid | `true` |
+| Two issuers, both revoked | `false` |
+| Two issuers, both expired | `false` |
+
+Use `has_valid_claim_from_issuer` when you need to verify a claim from a specific trusted issuer rather than any issuer in the registry.
+
 ### Verify Any of Multiple Claims
 
 `has_any_claim(env: Env, subject: Address, claim_types: Vec<String>) -> bool`
