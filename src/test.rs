@@ -87,7 +87,7 @@ fn test_register_issuer_emits_event() {
     let timestamp = 1234567890u64;
     env.ledger().set_timestamp(timestamp);
 
-    client.initialize(&admin);
+    client.initialize(&admin, &None);
     client.register_issuer(&admin, &issuer);
 
     let events = env.events().all();
@@ -265,6 +265,81 @@ fn test_create_attestation_rejects_without_fee_payment() {
 }
 
 #[test]
+fn test_create_attestation_rejects_self_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer, client) = setup(&env);
+    let collector = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let fee_token = register_test_token(&env, &admin);
+    let token_client = TokenClient::new(&env, &fee_token);
+    let asset_admin = StellarAssetClient::new(&env, &fee_token);
+
+    asset_admin.mint(&issuer, &100);
+    client.set_fee(&admin, &25, &collector, &Some(fee_token.clone()));
+
+    let result = client.try_create_attestation(&issuer, &issuer, &claim_type, &None, &None, &None);
+    assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+    assert_eq!(token_client.balance(&issuer), 100);
+    assert_eq!(token_client.balance(&collector), 0);
+    assert_eq!(client.get_subject_attestations(&issuer, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_create_attestation_rejects_past_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    let now = env.ledger().timestamp();
+    let past_expiration = Some(now - 1);
+
+    let result = client.try_create_attestation(
+        &issuer,
+        &subject,
+        &claim_type,
+        &past_expiration,
+        &None,
+        &None,
+    );
+
+    assert_eq!(result, Err(Ok(Error::InvalidExpiration)));
+}
+
+#[test]
+fn test_create_attestation_accepts_future_expiration() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    let future_expiration = Some(env.ledger().timestamp() + 1);
+
+    let id = client.create_attestation(
+        &issuer,
+        &subject,
+        &claim_type,
+        &future_expiration,
+        &None,
+        &None,
+    );
+
+    let attestation = client.get_attestation(&id);
+    assert_eq!(attestation.expiration, future_expiration);
+    assert!(client.has_valid_claim(&subject, &claim_type));
+}
+
+#[test]
 fn test_create_attestation_rejects_metadata_over_256_chars() {
     let env = Env::default();
     env.mock_all_auths();
@@ -274,7 +349,8 @@ fn test_create_attestation_rejects_metadata_over_256_chars() {
     let claim_type = String::from_str(&env, "KYC_PASSED");
     let too_long = Some(String::from_bytes(&env, &[b'a'; 257]));
 
-    let result = client.try_create_attestation(&issuer, &subject, &claim_type, &None, &too_long, &None);
+    let result =
+        client.try_create_attestation(&issuer, &subject, &claim_type, &None, &too_long, &None);
     assert_eq!(result, Err(Ok(types::Error::MetadataTooLong)));
 }
 
@@ -306,7 +382,7 @@ fn test_has_valid_claim_and_revocation() {
     let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
     assert!(client.has_valid_claim(&subject, &claim_type));
 
-    client.revoke_attestation(&issuer, &id);
+    client.revoke_attestation(&issuer, &id, &None);
     assert!(!client.has_valid_claim(&subject, &claim_type));
     assert!(client.get_attestation(&id).revoked);
 }
@@ -321,7 +397,14 @@ fn test_expired_attestation_status() {
     let claim_type = String::from_str(&env, "KYC_PASSED");
     let now = env.ledger().timestamp();
 
-    let id = client.create_attestation(&issuer, &subject, &claim_type, &Some(now + 100), &None, &None);
+    let id = client.create_attestation(
+        &issuer,
+        &subject,
+        &claim_type,
+        &Some(now + 100),
+        &None,
+        &None,
+    );
     assert!(client.has_valid_claim(&subject, &claim_type));
 
     env.ledger().with_mut(|li| li.timestamp = now + 101);
@@ -770,8 +853,7 @@ fn test_multisig_2_of_3_activates_on_second_signature() {
     required.push_back(issuer2.clone());
     required.push_back(issuer3.clone());
 
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
+    let proposal_id = client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
 
     // After proposal, attestation should NOT exist yet.
     let proposal = client.get_multisig_proposal(&proposal_id);
@@ -801,8 +883,7 @@ fn test_multisig_3_of_3_requires_all_signers() {
     required.push_back(issuer2.clone());
     required.push_back(issuer3.clone());
 
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &3);
+    let proposal_id = client.propose_attestation(&issuer1, &subject, &claim_type, &required, &3);
 
     client.cosign_attestation(&issuer2, &proposal_id);
     assert!(!client.has_valid_claim(&subject, &claim_type));
@@ -828,8 +909,7 @@ fn test_multisig_non_required_signer_rejected() {
     required.push_back(issuer2.clone());
     required.push_back(issuer3.clone());
 
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
+    let proposal_id = client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
 
     let result = client.try_cosign_attestation(&outsider, &proposal_id);
     assert_eq!(result, Err(Ok(types::Error::NotRequiredSigner)));
@@ -849,8 +929,7 @@ fn test_multisig_duplicate_cosign_rejected() {
     required.push_back(issuer2.clone());
     required.push_back(issuer3.clone());
 
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &3);
+    let proposal_id = client.propose_attestation(&issuer1, &subject, &claim_type, &required, &3);
 
     // issuer1 already signed on proposal creation.
     let result = client.try_cosign_attestation(&issuer1, &proposal_id);
@@ -873,8 +952,7 @@ fn test_multisig_expired_proposal_rejected() {
     required.push_back(issuer2.clone());
     required.push_back(issuer3.clone());
 
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
+    let proposal_id = client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
 
     // Advance past the 7-day expiry window.
     env.ledger()
@@ -899,13 +977,11 @@ fn test_multisig_invalid_threshold_rejected() {
     required.push_back(issuer3.clone());
 
     // threshold 0 is invalid.
-    let result =
-        client.try_propose_attestation(&issuer1, &subject, &claim_type, &required, &0);
+    let result = client.try_propose_attestation(&issuer1, &subject, &claim_type, &required, &0);
     assert_eq!(result, Err(Ok(types::Error::InvalidThreshold)));
 
     // threshold > signer count is invalid.
-    let result =
-        client.try_propose_attestation(&issuer1, &subject, &claim_type, &required, &4);
+    let result = client.try_propose_attestation(&issuer1, &subject, &claim_type, &required, &4);
     assert_eq!(result, Err(Ok(types::Error::InvalidThreshold)));
 }
 
@@ -923,8 +999,7 @@ fn test_multisig_proposal_emits_events() {
     required.push_back(issuer2.clone());
     required.push_back(issuer3.clone());
 
-    let proposal_id =
-        client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
+    let proposal_id = client.propose_attestation(&issuer1, &subject, &claim_type, &required, &2);
 
     // Verify ms_prop event was emitted.
     let events = env.events().all();
@@ -977,4 +1052,784 @@ fn test_multisig_unregistered_proposer_rejected() {
     let result =
         client.try_propose_attestation(&unregistered, &subject, &claim_type, &required, &2);
     assert_eq!(result, Err(Ok(types::Error::Unauthorized)));
+}
+
+#[test]
+fn test_revoke_with_reason_stores_reason() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let reason = String::from_str(&env, "Document expired");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.revoke_attestation(&issuer, &id, &Some(reason.clone()));
+
+    let attestation = client.get_attestation(&id);
+    assert!(attestation.revoked);
+    assert_eq!(attestation.revocation_reason, Some(reason));
+}
+
+#[test]
+fn test_revoke_without_reason_stores_none() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.revoke_attestation(&issuer, &id, &None);
+
+    let attestation = client.get_attestation(&id);
+    assert!(attestation.revoked);
+    assert_eq!(attestation.revocation_reason, None);
+}
+
+#[test]
+fn test_revoke_reason_too_long_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    // 129 'a' characters — one over the limit
+    let long_reason = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    let result = client.try_revoke_attestation(&issuer, &id, &Some(long_reason));
+    assert_eq!(result, Err(Ok(types::Error::ReasonTooLong)));
+}
+
+#[test]
+fn test_revoke_reason_exactly_128_chars_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+
+    // Exactly 128 'a' characters
+    let exact_reason = String::from_str(&env, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    client.revoke_attestation(&issuer, &id, &Some(exact_reason.clone()));
+
+    let attestation = client.get_attestation(&id);
+    assert!(attestation.revoked);
+    assert_eq!(attestation.revocation_reason, Some(exact_reason));
+}
+
+// ── Property-based tests: attestation ID uniqueness ──────────────────────────
+
+/// Same issuer, different subjects → different IDs.
+#[test]
+fn test_id_uniqueness_same_issuer_different_subjects() {
+    let env = Env::default();
+    let issuer = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let ts = 1_000_000u64;
+
+    let id1 =
+        types::Attestation::generate_id(&env, &issuer, &Address::generate(&env), &claim_type, ts);
+    let id2 =
+        types::Attestation::generate_id(&env, &issuer, &Address::generate(&env), &claim_type, ts);
+    assert_ne!(id1, id2, "different subjects must produce different IDs");
+}
+
+/// Same subject, different issuers → different IDs.
+#[test]
+fn test_id_uniqueness_same_subject_different_issuers() {
+    let env = Env::default();
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let ts = 1_000_000u64;
+
+    let id1 =
+        types::Attestation::generate_id(&env, &Address::generate(&env), &subject, &claim_type, ts);
+    let id2 =
+        types::Attestation::generate_id(&env, &Address::generate(&env), &subject, &claim_type, ts);
+    assert_ne!(id1, id2, "different issuers must produce different IDs");
+}
+
+/// Same issuer + subject, different claim types → different IDs.
+#[test]
+fn test_id_uniqueness_same_issuer_subject_different_claim_types() {
+    let env = Env::default();
+    let issuer = Address::generate(&env);
+    let subject = Address::generate(&env);
+    let ts = 1_000_000u64;
+
+    let id1 = types::Attestation::generate_id(
+        &env,
+        &issuer,
+        &subject,
+        &String::from_str(&env, "KYC_PASSED"),
+        ts,
+    );
+    let id2 = types::Attestation::generate_id(
+        &env,
+        &issuer,
+        &subject,
+        &String::from_str(&env, "ACCREDITED_INVESTOR"),
+        ts,
+    );
+    assert_ne!(id1, id2, "different claim types must produce different IDs");
+}
+
+/// Same issuer + subject + claim type, different timestamps → different IDs.
+#[test]
+fn test_id_uniqueness_same_inputs_different_timestamps() {
+    let env = Env::default();
+    let issuer = Address::generate(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id1 = types::Attestation::generate_id(&env, &issuer, &subject, &claim_type, 1_000_000);
+    let id2 = types::Attestation::generate_id(&env, &issuer, &subject, &claim_type, 1_000_001);
+    assert_ne!(id1, id2, "different timestamps must produce different IDs");
+}
+
+/// Same inputs always produce the same ID (determinism).
+#[test]
+fn test_id_determinism_same_inputs_same_id() {
+    let env = Env::default();
+    let issuer = Address::generate(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let ts = 1_000_000u64;
+
+    let id1 = types::Attestation::generate_id(&env, &issuer, &subject, &claim_type, ts);
+    let id2 = types::Attestation::generate_id(&env, &issuer, &subject, &claim_type, ts);
+    assert_eq!(id1, id2, "identical inputs must always produce the same ID");
+}
+
+/// No collisions across 100 generated IDs (varying subjects, issuers, claim types, timestamps).
+#[test]
+fn test_id_no_collisions_across_100_combinations() {
+    let env = Env::default();
+    let claim_types = [
+        "KYC_PASSED",
+        "ACCREDITED_INVESTOR",
+        "MERCHANT_VERIFIED",
+        "AML_CLEARED",
+        "SANCTIONS_CHECKED",
+    ];
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+
+    for i in 0u64..100 {
+        let issuer = Address::generate(&env);
+        let subject = Address::generate(&env);
+        let claim_type = String::from_str(&env, claim_types[(i as usize) % claim_types.len()]);
+        let ts = 1_000_000u64 + i;
+
+        let id = types::Attestation::generate_id(&env, &issuer, &subject, &claim_type, ts);
+
+        // Ensure this ID hasn't appeared before.
+        assert!(!ids.contains(&id), "collision detected at iteration {i}");
+        ids.push_back(id);
+    }
+
+    assert_eq!(ids.len(), 100);
+}
+
+// ── Pagination edge cases ────────────────────────────────────────────────────
+
+#[allow(dead_code)]
+fn setup_with_n_attestations(env: &Env, n: u32) -> (Address, Address, TrustLinkContractClient<'_>) {
+    let (admin, issuer, client) = setup(env);
+    for _ in 0..n {
+        let subject = Address::generate(env);
+        client.create_attestation(
+            &issuer,
+            &subject,
+            &String::from_str(env, "KYC_PASSED"),
+            &None,
+            &None,
+            &None,
+        );
+    }
+    (admin, issuer, client)
+}
+
+fn create_n_attestations_for_subject(
+    env: &Env,
+    client: &TrustLinkContractClient<'_>,
+    issuer: &Address,
+    subject: &Address,
+    n: u32,
+) {
+    for _ in 0..n {
+        client.create_attestation(
+            issuer,
+            subject,
+            &String::from_str(env, "KYC_PASSED"),
+            &None,
+            &None,
+            &None,
+        );
+        // advance ledger time so each attestation gets a unique timestamp / ID
+        env.ledger().with_mut(|l| l.timestamp += 1);
+    }
+}
+
+// ── get_subject_attestations ─────────────────────────────────────────────────
+
+#[test]
+fn test_subject_pagination_zero_attestations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    // subject has no attestations
+    assert_eq!(client.get_subject_attestations(&subject, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_subject_pagination_one_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 1);
+    assert_eq!(client.get_subject_attestations(&subject, &0, &10).len(), 1);
+}
+
+#[test]
+fn test_subject_pagination_limit_zero_returns_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 3);
+    assert_eq!(client.get_subject_attestations(&subject, &0, &0).len(), 0);
+}
+
+#[test]
+fn test_subject_pagination_start_beyond_total_returns_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 3);
+    assert_eq!(client.get_subject_attestations(&subject, &10, &5).len(), 0);
+}
+
+#[test]
+fn test_subject_pagination_start_plus_limit_exceeds_total_returns_remaining() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 5);
+    // start=3, limit=10 → only 2 items remain
+    assert_eq!(client.get_subject_attestations(&subject, &3, &10).len(), 2);
+}
+
+#[test]
+fn test_subject_pagination_limit_one_returns_exactly_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 5);
+    assert_eq!(client.get_subject_attestations(&subject, &0, &1).len(), 1);
+}
+
+// ── get_issuer_attestations ──────────────────────────────────────────────────
+
+#[test]
+fn test_issuer_pagination_zero_attestations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    assert_eq!(client.get_issuer_attestations(&issuer, &0, &10).len(), 0);
+}
+
+#[test]
+fn test_issuer_pagination_one_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 1);
+    assert_eq!(client.get_issuer_attestations(&issuer, &0, &10).len(), 1);
+}
+
+#[test]
+fn test_issuer_pagination_limit_zero_returns_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 3);
+    assert_eq!(client.get_issuer_attestations(&issuer, &0, &0).len(), 0);
+}
+
+#[test]
+fn test_issuer_pagination_start_beyond_total_returns_empty() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 3);
+    assert_eq!(client.get_issuer_attestations(&issuer, &10, &5).len(), 0);
+}
+
+#[test]
+fn test_issuer_pagination_start_plus_limit_exceeds_total_returns_remaining() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 5);
+    // start=3, limit=10 → only 2 items remain
+    assert_eq!(client.get_issuer_attestations(&issuer, &3, &10).len(), 2);
+}
+
+#[test]
+fn test_issuer_pagination_limit_one_returns_exactly_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    create_n_attestations_for_subject(&env, &client, &issuer, &subject, 5);
+    assert_eq!(client.get_issuer_attestations(&issuer, &0, &1).len(), 1);
+}
+
+// ── audit log ────────────────────────────────────────────────────────────────
+
+#[test]
+fn test_audit_log_create_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    let log = client.get_audit_log(&id);
+
+    assert_eq!(log.len(), 1);
+    assert_eq!(
+        log.get(0).unwrap().action,
+        crate::types::AuditAction::Created
+    );
+    assert_eq!(log.get(0).unwrap().actor, issuer);
+}
+
+#[test]
+fn test_audit_log_revoke_appends_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.revoke_attestation(&issuer, &id, &None);
+    let log = client.get_audit_log(&id);
+
+    assert_eq!(log.len(), 2);
+    assert_eq!(
+        log.get(1).unwrap().action,
+        crate::types::AuditAction::Revoked
+    );
+    assert_eq!(log.get(1).unwrap().actor, issuer);
+}
+
+#[test]
+fn test_audit_log_revoke_records_reason() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+    let reason = Some(String::from_str(&env, "fraud detected"));
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.revoke_attestation(&issuer, &id, &reason);
+    let log = client.get_audit_log(&id);
+
+    assert_eq!(log.get(1).unwrap().details, reason);
+}
+
+#[test]
+fn test_audit_log_renew_appends_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    let new_exp = env.ledger().timestamp() + 86_400 * 30;
+    client.renew_attestation(&issuer, &id, &Some(new_exp));
+    let log = client.get_audit_log(&id);
+
+    assert_eq!(log.len(), 2);
+    assert_eq!(
+        log.get(1).unwrap().action,
+        crate::types::AuditAction::Renewed
+    );
+}
+
+#[test]
+fn test_audit_log_update_expiration_appends_entry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    let new_exp = env.ledger().timestamp() + 86_400 * 60;
+    client.update_expiration(&issuer, &id, &Some(new_exp));
+    let log = client.get_audit_log(&id);
+
+    assert_eq!(log.len(), 2);
+    assert_eq!(
+        log.get(1).unwrap().action,
+        crate::types::AuditAction::Updated
+    );
+}
+
+#[test]
+fn test_audit_log_is_append_only_across_multiple_actions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    let new_exp = env.ledger().timestamp() + 86_400 * 30;
+    client.renew_attestation(&issuer, &id, &Some(new_exp));
+    client.revoke_attestation(&issuer, &id, &None);
+    let log = client.get_audit_log(&id);
+
+    assert_eq!(log.len(), 3);
+    assert_eq!(
+        log.get(0).unwrap().action,
+        crate::types::AuditAction::Created
+    );
+    assert_eq!(
+        log.get(1).unwrap().action,
+        crate::types::AuditAction::Renewed
+    );
+    assert_eq!(
+        log.get(2).unwrap().action,
+        crate::types::AuditAction::Revoked
+    );
+}
+
+#[test]
+fn test_audit_log_empty_for_nonexistent_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, _, client) = setup(&env);
+    let fake_id = String::from_str(&env, "nonexistent");
+    let log = client.get_audit_log(&fake_id);
+    assert_eq!(log.len(), 0);
+}
+
+#[test]
+fn test_audit_log_batch_revoke_appends_entries() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, issuer, client) = setup(&env);
+    let subject1 = Address::generate(&env);
+    let subject2 = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id1 = client.create_attestation(&issuer, &subject1, &claim_type, &None, &None, &None);
+    let id2 = client.create_attestation(&issuer, &subject2, &claim_type, &None, &None, &None);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id1.clone());
+    ids.push_back(id2.clone());
+    client.revoke_attestations_batch(&issuer, &ids, &None);
+
+    assert_eq!(client.get_audit_log(&id1).len(), 2);
+    assert_eq!(client.get_audit_log(&id2).len(), 2);
+    assert_eq!(
+        client.get_audit_log(&id1).get(1).unwrap().action,
+        crate::types::AuditAction::Revoked
+    );
+}
+
+// ---------------------------------------------------------------------------
+// health_check
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_health_check_before_initialization() {
+    let env = Env::default();
+    let (_, client) = create_test_contract(&env);
+
+    let status = client.health_check();
+
+    assert!(!status.initialized);
+    assert!(!status.admin_set);
+    assert_eq!(status.issuer_count, 0);
+    assert_eq!(status.total_attestations, 0);
+}
+
+#[test]
+fn test_health_check_after_operations() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_admin, issuer, client) = setup(&env);
+
+    // After init + 1 issuer registered by setup()
+    let status = client.health_check();
+    assert!(status.initialized);
+    assert!(status.admin_set);
+    assert_eq!(status.issuer_count, 1);
+    assert_eq!(status.total_attestations, 0);
+
+    // Create two attestations
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+    client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+    let subject2 = Address::generate(&env);
+    client.create_attestation(&issuer, &subject2, &claim, &None, &None, &None);
+
+    let status = client.health_check();
+    assert_eq!(status.total_attestations, 2);
+    assert_eq!(status.issuer_count, 1);
+}
+
+// ── Error variant coverage ───────────────────────────────────────────────────
+
+#[test]
+fn test_error_already_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let (_, client) = create_test_contract(&env);
+
+    client.initialize(&admin, &None);
+    let result = client.try_initialize(&admin, &None);
+    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn test_error_not_initialized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Call get_version (which requires initialization) before initialize.
+    let (_, client) = create_test_contract(&env);
+    let result = client.try_get_version();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn test_error_not_found() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, _, client) = setup(&env);
+    let fake_id = String::from_str(&env, "nonexistent_attestation_id");
+    let result = client.try_get_attestation(&fake_id);
+    assert_eq!(result, Err(Ok(Error::NotFound)));
+}
+
+#[test]
+fn test_error_already_revoked() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, issuer, client) = setup(&env);
+    let subject = Address::generate(&env);
+    let claim_type = String::from_str(&env, "KYC_PASSED");
+
+    let id = client.create_attestation(&issuer, &subject, &claim_type, &None, &None, &None);
+    client.revoke_attestation(&issuer, &id, &None);
+
+    let result = client.try_revoke_attestation(&issuer, &id, &None);
+    assert_eq!(result, Err(Ok(Error::AlreadyRevoked)));
+// ---------------------------------------------------------------------------
+// Issuer removal – attestation persistence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_attestation_remains_valid_after_issuer_removal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+    let att_id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+    // Remove the issuer
+    client.remove_issuer(&admin, &issuer);
+
+    // Attestation should still be retrievable and valid
+    let att = client.get_attestation(&att_id);
+    assert!(!att.revoked);
+    assert_eq!(att.issuer, issuer);
+    assert_eq!(att.claim_type, claim);
+}
+
+#[test]
+fn test_has_valid_claim_true_after_issuer_removal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+    client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+    // Remove the issuer
+    client.remove_issuer(&admin, &issuer);
+
+    // has_valid_claim should still return true
+    assert!(client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_removed_issuer_cannot_create_new_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, issuer, client) = setup(&env);
+
+    // Remove the issuer
+    client.remove_issuer(&admin, &issuer);
+
+    // Attempting to create a new attestation should fail with Unauthorized
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+    client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+}
+
+#[test]
+fn test_removed_issuer_can_revoke_own_attestation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (admin, issuer, client) = setup(&env);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+    let att_id = client.create_attestation(&issuer, &subject, &claim, &None, &None, &None);
+
+    // Remove the issuer
+    client.remove_issuer(&admin, &issuer);
+
+    // Removed issuer can still revoke their own attestation because
+    // revoke_attestation only checks attestation.issuer == caller,
+    // not whether the caller is currently registered.
+    client.revoke_attestation(&issuer, &att_id, &None);
+
+    let att = client.get_attestation(&att_id);
+    assert!(att.revoked);
+    assert!(!client.has_valid_claim(&subject, &claim));
+}
+
+// ── Multi-issuer has_valid_claim tests ──────────────────────────────────────
+
+#[test]
+fn test_multi_issuer_both_valid_returns_true() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.create_attestation(&issuer1, &subject, &claim, &None, &None, &None);
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    assert!(client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+fn test_multi_issuer_one_revoked_one_valid_returns_true() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id1 = client.create_attestation(&issuer1, &subject, &claim, &None, &None, &None);
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    client.revoke_attestation(&issuer1, &id1, &None);
+
+    // issuer1's attestation is revoked but issuer2's is still valid
+    assert!(client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+fn test_multi_issuer_both_revoked_returns_false() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id1 = client.create_attestation(&issuer1, &subject, &claim, &None, &None, &None);
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    let id2 = client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    client.revoke_attestation(&issuer1, &id1, &None);
+    client.revoke_attestation(&issuer2, &id2, &None);
+
+    assert!(!client.has_valid_claim(&subject, &claim));
+}
+
+#[test]
+fn test_multi_issuer_one_expired_one_valid_returns_true() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (admin, issuer1, client) = setup(&env);
+    let issuer2 = Address::generate(&env);
+    client.register_issuer(&admin, &issuer2);
+
+    let subject = Address::generate(&env);
+    let claim = String::from_str(&env, "KYC_PASSED");
+
+    // issuer1 creates an attestation that expires at t=5_000
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    client.create_attestation(&issuer1, &subject, &claim, &Some(5_000), &None, &None);
+
+    // issuer2 creates a non-expiring attestation
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    client.create_attestation(&issuer2, &subject, &claim, &None, &None, &None);
+
+    // Advance past issuer1's expiration
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+
+    // issuer1's attestation is expired but issuer2's is still valid
+    assert!(client.has_valid_claim(&subject, &claim));
 }
